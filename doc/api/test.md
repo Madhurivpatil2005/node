@@ -3563,6 +3563,92 @@ Emitted when no more tests are queued for execution in watch mode.
 
 Emitted when one or more tests are restarted due to a file change in watch mode.
 
+## Test instrumentation and OpenTelemetry
+
+<!-- YAML
+added: REPLACEME
+-->
+
+The test runner publishes test execution events through the Node.js
+[`diagnostics_channel`][] module, enabling integration with observability tools
+like OpenTelemetry without requiring changes to the test runner itself.
+
+### Tracing events
+
+The test runner publishes events to the `'node.test'` tracing channel. Subscribers
+can use the [`TracingChannel`][] API to bind context or perform custom
+instrumentation.
+
+#### Channel: `'tracing:node.test:start'`
+
+* `data` {Object}
+  * `name` {string} The name of the test.
+  * `nesting` {number} The nesting level of the test.
+  * `file` {string} The path to the test file.
+  * `type` {string} The type of test. Either `'test'` or `'suite'`.
+
+Emitted when a test or suite starts execution. The test's span encompasses all
+of its before, beforeEach, and afterEach hooks, as well as the test body.
+
+#### Channel: `'tracing:node.test:end'`
+
+* `data` {Object}
+  * `name` {string} The name of the test.
+  * `nesting` {number} The nesting level of the test.
+  * `file` {string} The path to the test file.
+  * `type` {string} The type of test. Either `'test'` or `'suite'`.
+
+Emitted when a test or suite finishes execution.
+
+#### Channel: `'tracing:node.test:error'`
+
+* `data` {Object}
+  * `name` {string} The name of the test.
+  * `nesting` {number} The nesting level of the test.
+  * `file` {string} The path to the test file.
+  * `type` {string} The type of test. Either `'test'` or `'suite'`.
+  * `error` {Error} The error that was thrown.
+
+Emitted when a test or suite throws an error.
+
+### OpenTelemetry integration
+
+The tracing channel can be used to integrate with OpenTelemetry by binding
+an `AsyncLocalStorage` instance. This allows OpenTelemetry context to be
+automatically propagated through the test execution and all async operations
+within the test.
+
+```mjs
+import { diagnosticsChannel } from 'node:diagnostics_channel';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { context, trace } from '@opentelemetry/api';
+
+const testStorage = new AsyncLocalStorage();
+const testChannel = diagnosticsChannel.tracingChannel('node.test');
+const tracer = trace.getTracer('test-tracer');
+
+// Bind OpenTelemetry context to test execution
+testChannel.start.bindStore(testStorage, (data) => {
+  const span = tracer.startSpan(data.name);
+  return context.with(trace.setSpan(context.active(), span), () => {
+    return context.active();
+  });
+});
+
+// Optionally handle errors and cleanup
+testChannel.error.subscribe((data) => {
+  // Handle span errors
+});
+
+testChannel.end.subscribe((data) => {
+  // Cleanup span
+});
+```
+
+When using `bindStore()`, the context provided will be automatically propagated
+to the test function and all async operations within the test, without requiring
+any additional instrumentation in the test code.
+
 ## Class: `TestContext`
 
 <!-- YAML
@@ -4254,11 +4340,13 @@ Can be used to abort test subtasks when the test has been aborted.
 [`NODE_V8_COVERAGE`]: cli.md#node_v8_coveragedir
 [`SuiteContext`]: #class-suitecontext
 [`TestContext`]: #class-testcontext
+[`TracingChannel`]: diagnostics_channel.md#class-tracingchannel
 [`assert.throws`]: assert.md#assertthrowsfn-error-message
 [`context.diagnostic`]: #contextdiagnosticmessage
 [`context.skip`]: #contextskipmessage
 [`context.todo`]: #contexttodomessage
 [`describe()`]: #describename-options-fn
+[`diagnostics_channel`]: diagnostics_channel.md
 [`glob(7)`]: https://man7.org/linux/man-pages/man7/glob.7.html
 [`it()`]: #itname-options-fn
 [`run()`]: #runoptions
